@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/sentry-integration` reports provider failures, exhausted timeouts, and unhandled exceptions through an optional Sentry adapter. Expected 422 and 404 responses are breadcrumbs. The single v2 change is still a later branch.
+`feat/agent-v2-and-reports` freezes one prompt change in `v2` and writes four live-run artifacts when `OPENAI_API_KEY` is available.
 
 ## What this does
 
@@ -127,6 +127,21 @@ Let `G` be gold claims, `P` accepted predictions, `M` exact span matches, and `C
 
 Arithmetic check: `G=10`, `P=10`, `M=8`, `C=7` gives extraction precision, recall, and F1 of 0.80, and joint precision, recall, and F1 of 0.70.
 
+## v1 to v2
+
+`v1` is frozen at `prompts/v1/system.txt`. `V2ClaimPipeline` overrides `opening_messages` and reads `prompts/v2/system.txt`. The classify loop, tool executor, quote locator, span chain, and scorer are unchanged.
+
+The one added instruction tells the model not to transfer a fact across a different model, variant, feature, date, or condition. Silence about that target stays `unknown` unless a supplied fact explicitly refutes it. Development labels often turn on scope and feature conflation, so this is the change under test. It can also push a genuinely supported sentence to `unknown`, which would lower joint F1.
+
+Both prompts are frozen before the check split. `python -m speaker_claims.reports` runs `v1` development, `v2` development, `v1` check, and `v2` check, in that order. It writes:
+
+- `reports/v1-development.json`
+- `reports/v2-development.json`
+- `reports/v1-check.json`
+- `reports/v2-check.json`
+
+Check artifacts keep `quality` null. Development artifacts include joint F1, which is the comparison. The command needs `OPENAI_API_KEY` and a PostgreSQL `DATABASE_URL` in `.env`. It does not send gold to the model. Copy `.env.example` and fill in the key before running it.
+
 ## API and database
 
 | Method | Behavior |
@@ -135,7 +150,7 @@ Arithmetic check: `G=10`, `P=10`, `M=8`, `C=7` gives extraction precision, recal
 | `POST /evaluation-runs` | Body is `agent_version` and `split` (`development` or `check`). `201` with `run_id` and available metrics. Check quality metrics stay null. |
 | `GET /evaluation-runs/{id}` | Joins run metadata, answer outcomes, and predicted claims. Missing run: `404`. Invalid UUID: `422`. |
 
-Store `runs`, `answer_results`, and `claim_results`. Alembic revision `20261021_0001` creates them. `answer_results` is unique on `(run_id, answer_id)`. `claim_results` is unique on `(run_id, answer_id, start_char, end_char)` and references that answer row. Writes use bound parameters inside one transaction. `POST /classify` does not open the gold file. `POST /evaluation-runs` loads gold only for the development split, and a check run stores `quality` as null. `v2` is a valid request value and returns 422 until that pipeline is registered.
+Store `runs`, `answer_results`, and `claim_results`. Alembic revision `20261021_0001` creates them. `answer_results` is unique on `(run_id, answer_id)`. `claim_results` is unique on `(run_id, answer_id, start_char, end_char)` and references that answer row. Writes use bound parameters inside one transaction. `POST /classify` does not open the gold file. `POST /evaluation-runs` loads gold only for the development split, and a check run stores `quality` as null. `build_pipelines` registers `v1` and `v2`. A service that does not register `v2` still returns 422 for that version.
 
 ## Reliability and observability
 

@@ -6,7 +6,7 @@ from openai import OpenAI
 
 from speaker_claims.adapters.csv_catalogue import CsvFactCatalogue
 from speaker_claims.adapters.openai_provider import DEFAULT_MODEL, OpenAIProvider
-from speaker_claims.application.claim_pipeline import V1ClaimPipeline
+from speaker_claims.application.claim_pipeline import V1ClaimPipeline, V2ClaimPipeline
 from speaker_claims.application.fact_tool import FactToolExecutor
 from speaker_claims.application.monitoring import NoOpMonitor
 from speaker_claims.application.reliability import ProviderGate, RetryingProvider, RetryPolicy
@@ -44,6 +44,31 @@ def build_tracer(settings: Settings) -> TracerPort:
 def load_v1_prompt() -> str:
     path = Path(__file__).resolve().parents[2] / "prompts" / "v1" / "system.txt"
     return path.read_text(encoding="utf-8")
+
+
+def load_v2_prompt() -> str:
+    path = Path(__file__).resolve().parents[2] / "prompts" / "v2" / "system.txt"
+    return path.read_text(encoding="utf-8")
+
+
+def build_pipelines(
+    api_key: str,
+    catalogue: CsvFactCatalogue,
+    model: str = DEFAULT_MODEL,
+    client: OpenAI | None = None,
+) -> dict[str, V1ClaimPipeline]:
+    """Register v1 and v2 on one provider gate. v2 changes only its opening prompt."""
+    provider = RetryingProvider(
+        OpenAIProvider(api_key=api_key, model=model, client=client),
+        policy=RetryPolicy(),
+        gate=ProviderGate(),
+    )
+    executor = FactToolExecutor(catalogue)
+    known_fact_ids = catalogue.fact_ids()
+    return {
+        "v1": V1ClaimPipeline(provider, executor, known_fact_ids, load_v1_prompt()),
+        "v2": V2ClaimPipeline(provider, executor, known_fact_ids, load_v2_prompt()),
+    }
 
 
 def build_v1_pipeline(

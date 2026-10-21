@@ -173,19 +173,34 @@ class V1ClaimPipeline(ClaimPipeline):
         return "v1"
 
     def opening_messages(self, answer: AnswerRecord) -> tuple[ChatMessage, ...]:
-        user = json.dumps(
-            {
-                "answer_id": answer.answer_id,
-                "brand_id": answer.brand_id,
-                "question": answer.question,
-                "ai_answer": answer.ai_answer,
-            },
-            ensure_ascii=False,
-        )
-        return (
-            ChatMessage(role="system", content=self._prompt),
-            ChatMessage(role="user", content=user),
-        )
+        return _opening_messages(self._prompt, answer)
+
+
+class V2ClaimPipeline(V1ClaimPipeline):
+    """Same loop as v1. The only replacement is the opening prompt."""
+
+    @property
+    def version(self) -> str:
+        return "v2"
+
+    def opening_messages(self, answer: AnswerRecord) -> tuple[ChatMessage, ...]:
+        return _opening_messages(self._prompt, answer)
+
+
+def _opening_messages(prompt: str, answer: AnswerRecord) -> tuple[ChatMessage, ...]:
+    user = json.dumps(
+        {
+            "answer_id": answer.answer_id,
+            "brand_id": answer.brand_id,
+            "question": answer.question,
+            "ai_answer": answer.ai_answer,
+        },
+        ensure_ascii=False,
+    )
+    return (
+        ChatMessage(role="system", content=prompt),
+        ChatMessage(role="user", content=user),
+    )
 
 
 def _parse_arguments(raw: str) -> dict[str, object] | None:
