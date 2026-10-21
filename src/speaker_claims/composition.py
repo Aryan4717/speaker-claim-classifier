@@ -8,10 +8,22 @@ from speaker_claims.adapters.csv_catalogue import CsvFactCatalogue
 from speaker_claims.adapters.openai_provider import DEFAULT_MODEL, OpenAIProvider
 from speaker_claims.application.claim_pipeline import V1ClaimPipeline
 from speaker_claims.application.fact_tool import FactToolExecutor
+from speaker_claims.application.monitoring import NoOpMonitor
 from speaker_claims.application.reliability import ProviderGate, RetryingProvider, RetryPolicy
 from speaker_claims.application.tracing import NoOpTracer
 from speaker_claims.config import Settings
+from speaker_claims.ports.monitor import ErrorMonitorPort
 from speaker_claims.ports.tracer import TracerPort
+
+
+def build_monitor(settings: Settings) -> ErrorMonitorPort:
+    """Select the Sentry adapter only when a DSN is configured."""
+    dsn = settings.sentry_dsn.strip()
+    if dsn == "":
+        return NoOpMonitor()
+    from speaker_claims.adapters.sentry_monitor import SentryMonitor
+
+    return SentryMonitor(dsn=dsn, environment=settings.sentry_environment)
 
 
 def build_tracer(settings: Settings) -> TracerPort:
