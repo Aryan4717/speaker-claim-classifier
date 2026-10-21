@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/agent-v2-and-reports` freezes one prompt change in `v2` and writes four live-run artifacts when `OPENAI_API_KEY` is available.
+`feat/agent-v2-and-reports` freezes one prompt change in `v2`, serves the API, and writes four live-run artifacts with Langfuse traces.
 
 ## What this does
 
@@ -22,9 +22,9 @@ The agent discovers claims itself. No claim list is given to the model.
 
 ## Services
 
-**Postgres** is the source of truth for evaluation runs. This branch runs PostgreSQL 16 in Docker only. Schema and migrations arrive with `feat/fastapi-postgres`.
+**Postgres** stores evaluation runs. `docker compose up -d` starts PostgreSQL 16. Alembic revision `20261021_0001` creates `runs`, `answer_results`, and `claim_results`.
 
-**The API** will own classification and evaluation. It is not started on this branch. When it exists, routes will call application services, and those services will depend on ports for the model, the catalogue, run storage, Langfuse, and Sentry.
+**The API** is `python -m speaker_claims.server`. Routes call `EvaluationService`, which depends on ports for the model, the catalogue, run storage, Langfuse, and Sentry.
 
 **Settings** load in `src/speaker_claims/config.py`. A missing `OPENAI_API_KEY`, a missing `DATABASE_URL`, a non-PostgreSQL URL, or a malformed `SENTRY_DSN` stops startup. An empty `SENTRY_DSN` is valid.
 
@@ -67,7 +67,7 @@ Boolean catalogue text is parsed only from `true` and `false`. Dates stay `YYYY-
 
 The model returns exact quotes, labels, fact ids, and a short reason. It is not asked for character offsets. `locate_quotes` finds each quote in `ai_answer` and builds `claim_id`, `start_char`, and `end_char`. A malformed body, a bad label, an unknown fact id, an illegal tool, an unknown brand, a timeout, or a third turn that is still a tool call becomes an answer error with no claims. That error is not stored as `unknown`. An empty claims list is a successful answer.
 
-`OpenAIProvider` is the only type that imports the OpenAI SDK. Tests use a fake `LlmPort`. The v1 prompt is `prompts/v1/system.txt`. It does not contain gold labels. Live calls use `gpt-4o-mini` with a 15-second request timeout. Retries are not part of this branch.
+`OpenAIProvider` is the only type that imports the OpenAI SDK. Tests use a fake `LlmPort`. The v1 prompt is `prompts/v1/system.txt`. It does not contain gold labels. Live calls use `gpt-4o-mini` with a 15-second request timeout. `RetryingProvider` retries a timeout, rate limit, or transient failure once.
 
 ## Evaluation harness
 
@@ -133,22 +133,22 @@ Arithmetic check: `G=10`, `P=10`, `M=8`, `C=7` gives extraction precision, recal
 
 The one added instruction tells the model not to transfer a fact across a different model, variant, feature, date, or condition. Silence about that target stays `unknown` unless a supplied fact explicitly refutes it.
 
-Both prompts were frozen before the check split. The live runs are `gpt-4o-mini`, temperature 0, and the four files below. Check quality is null.
+Both prompts were frozen before the check split. The live runs below use `gpt-4o-mini` at temperature 0. Each answer has a Langfuse trace. Check quality is null.
 
 | Run | Answers | Errors | Accepted | Extraction F1 | Joint F1 |
 | --- | --- | --- | --- | --- | --- |
-| `v1` development | 40 | 10 | 291 | 0.795 | 0.657 |
-| `v2` development | 40 | 12 | 259 | 0.778 | 0.636 |
-| `v1` check | 10 | 4 | 59 | null | null |
-| `v2` check | 10 | 5 | 48 | null | null |
+| `v1` development | 40 | 9 | 289 | 0.812 | 0.671 |
+| `v2` development | 40 | 9 | 282 | 0.809 | 0.663 |
+| `v1` check | 10 | 0 | 100 | null | null |
+| `v2` check | 10 | 2 | 72 | null | null |
 
-On development, `v1` scored G=376, P=291, M=265, C=219. `v2` scored G=376, P=259, M=247, C=202. Extraction precision rose from 0.911 to 0.954, and unmatched predictions fell from 26 to 12. Recall fell from 0.705 to 0.657, missed gold rose from 111 to 129, and joint F1 fell from 0.657 to 0.636. Macro F1 fell from 0.657 to 0.634. Wrong-label matches stayed nearly flat, 46 to 45.
+On development, `v1` scored G=376, P=289, M=270, C=223. `v2` scored G=376, P=282, M=266, C=218. Extraction precision rose from 0.934 to 0.943, and unmatched predictions fell from 19 to 16. Recall fell from 0.718 to 0.707, missed gold rose from 106 to 110, and joint F1 fell from 0.671 to 0.663. Macro F1 fell from 0.671 to 0.662. Wrong-label matches were 47 and 48.
 
-`v1` development errors were 5 `quote_not_found`, 4 `unknown_brand`, and 1 `invalid_output`. `v2` had the same 5 quote misses and 4 unknown brands, plus 3 invalid outputs. The unknown brands are rejected before the model, so the prompt did not cause them. Check errors were 2 `invalid_output` and 2 `quote_not_found` for `v1`, and 4 `quote_not_found` and 1 `invalid_output` for `v2`.
+`v1` development errors were 5 `quote_not_found`, 3 `unknown_brand`, and 1 `invalid_output`. `v2` had 4 quote misses, the same 3 unknown brands, and 2 invalid outputs. Those three brands are rejected before the model. The `v1` check run had no errors. The `v2` check run had 1 `quote_not_found` and 1 `unknown_brand` from a tool call.
 
-The transfer rule made the model more conservative. It dropped sentences that were real gold claims, so `v1` remains the stronger development baseline.
+The transfer rule made the model slightly more conservative, so `v1` remains the stronger development baseline.
 
-`python -m speaker_claims.reports` rewrites `reports/v1-development.json`, `reports/v2-development.json`, `reports/v1-check.json`, and `reports/v2-check.json`. It needs `OPENAI_API_KEY` and a PostgreSQL `DATABASE_URL` in `.env`. It does not send gold to the model.
+`python -m speaker_claims.reports` stores the four runs in Postgres and rewrites `reports/v1-development.json`, `reports/v2-development.json`, `reports/v1-check.json`, and `reports/v2-check.json`. It needs `OPENAI_API_KEY`, `DATABASE_URL`, and the Langfuse keys in `.env`. It does not send gold to the model.
 
 ## API and database
 
@@ -226,7 +226,17 @@ python -m pip install -e ".[dev]"
 copy .env.example .env
 ```
 
-Fill `OPENAI_API_KEY` in `.env` before a live model call. Leave `SENTRY_DSN` empty until you want error reporting.
+Fill `OPENAI_API_KEY` in `.env` before a live model call. Fill `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` before you want traces exported. Leave `SENTRY_DSN` empty until you want error reporting.
+
+`DATABASE_URL` must reach this project's Postgres. `docker compose up -d` publishes it on port 5432. If another Postgres already owns that port, point `DATABASE_URL` at the port where this project's database is published.
+
+### API
+
+```powershell
+.\.venv\Scripts\python.exe -m speaker_claims.server
+```
+
+The process applies Alembic migrations, then serves `POST /classify`, `POST /evaluation-runs`, and `GET /evaluation-runs/{id}` on `127.0.0.1:8000`. Set `PORT` to change the port. The same wiring stores evaluation runs in Postgres and sends Langfuse traces when those keys are set.
 
 ### Postgres
 

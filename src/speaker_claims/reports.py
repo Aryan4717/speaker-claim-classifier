@@ -1,35 +1,18 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import subprocess
 from pathlib import Path
 
-from speaker_claims.adapters.csv_catalogue import CsvAnswerSource, CsvFactCatalogue
-from speaker_claims.adapters.csv_gold import CsvGoldSource
-from speaker_claims.adapters.openai_provider import DEFAULT_MODEL
-from speaker_claims.application.evaluation import EvaluationService
-from speaker_claims.composition import build_monitor, build_pipelines, build_tracer
-from speaker_claims.config import load_settings
 from speaker_claims.domain.runs import StoredAnswer, StoredClaim, StoredRun
+from speaker_claims.runtime import build_service
 
-ROOT = Path(__file__).resolve().parents[2]
-DATA = ROOT / "data"
-REPORTS = ROOT / "reports"
+REPORTS = Path(__file__).resolve().parents[2] / "reports"
 RUN_ORDER = (
     ("v1", "development"),
     ("v2", "development"),
     ("v1", "check"),
     ("v2", "check"),
 )
-
-
-class MemoryStore:
-    def save(self, run: StoredRun) -> None:
-        return None
-
-    def get(self, run_id: object) -> StoredRun | None:
-        return None
 
 
 def artifact(run: StoredRun) -> dict[str, object]:
@@ -64,28 +47,8 @@ def write_artifact(run: StoredRun, path: Path) -> None:
 
 
 def main() -> None:
-    """Freeze both prompts, then write the four live-run artifacts."""
-    settings = load_settings()
-    catalogue = CsvFactCatalogue.from_path(DATA / "brand_facts.csv")
-    service = EvaluationService(
-        build_pipelines(settings.openai_api_key.get_secret_value(), catalogue),
-        catalogue,
-        CsvAnswerSource(DATA / "answers.csv"),
-        CsvGoldSource(DATA / "development_gold.csv"),
-        MemoryStore(),
-        provider="openai",
-        model=DEFAULT_MODEL,
-        settings={
-            "timeout_seconds": 15,
-            "max_model_turns": 3,
-            "max_in_flight": 3,
-            "max_attempts": 2,
-        },
-        source_revision=_revision(),
-        file_hashes=_file_hashes(),
-        tracer=build_tracer(settings),
-        monitor=build_monitor(settings),
-    )
+    """Store both versions in Postgres and write the four live-run artifacts."""
+    service = build_service()
     for version, split in RUN_ORDER:
         run = service.start_run(version, split)
         path = REPORTS / f"{version}-{split}.json"
@@ -121,26 +84,6 @@ def _claim(claim: StoredClaim) -> dict[str, object]:
         "fact_ids": list(claim.fact_ids),
         "reason": claim.reason,
     }
-
-
-def _file_hashes() -> dict[str, str]:
-    names = ("answers.csv", "brand_facts.csv", "development_gold.csv")
-    return {name: hashlib.sha256((DATA / name).read_bytes()).hexdigest() for name in names}
-
-
-def _revision() -> str | None:
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    revision = completed.stdout.strip()
-    return revision or None
 
 
 if __name__ == "__main__":
