@@ -40,6 +40,14 @@ def load_gold(path: Path) -> tuple[GoldClaim, ...]:
     return tuple(_parse(row) for row in rows)
 
 
+class CsvGoldSource:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> tuple[GoldClaim, ...]:
+        return load_gold(self._path)
+
+
 def _parse(row: dict[str, str]) -> GoldClaim:
     label = row["expected_label"]
     if label not in LABELS:

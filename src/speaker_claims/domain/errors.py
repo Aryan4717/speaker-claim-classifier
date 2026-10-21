@@ -37,3 +37,8 @@ class ProviderTimeout(DomainError):
 class ProviderFailure(DomainError):
     def __init__(self) -> None:
         super().__init__("provider_failure", "The model request failed")
+
+
+class UnavailableAgentVersion(DomainError):
+    def __init__(self, version: str) -> None:
+        super().__init__("unavailable_agent", f"Agent version {version} is not available")

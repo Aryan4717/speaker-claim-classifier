@@ -270,3 +270,48 @@ def _ratio(numerator: int, denominator: int) -> float:
     if denominator == 0:
         return 0.0
     return numerator / denominator
+
+
+def quality_document(metrics: QualityMetrics) -> dict[str, object]:
+    """JSON-ready score payload. Check runs do not call this."""
+    return {
+        "g": metrics.g,
+        "p": metrics.p,
+        "m": metrics.m,
+        "c": metrics.c,
+        "extraction_precision": metrics.extraction_precision,
+        "extraction_recall": metrics.extraction_recall,
+        "extraction_f1": metrics.extraction_f1,
+        "joint_precision": metrics.joint_precision,
+        "joint_recall": metrics.joint_recall,
+        "joint_f1": metrics.joint_f1,
+        "gold_coverage": metrics.gold_coverage,
+        "macro_f1": metrics.macro_f1,
+        "missed_gold_ids": list(metrics.missed_gold_ids),
+        "unmatched_prediction_ids": list(metrics.unmatched_prediction_ids),
+        "matched_wrong_label_ids": list(metrics.matched_wrong_label_ids),
+        "supported": _label_document(metrics.supported),
+        "contradicted": _label_document(metrics.contradicted),
+        "unknown": _label_document(metrics.unknown),
+        "confusion": {
+            "rows": list(_ROWS),
+            "columns": list(_COLUMNS),
+            "counts": [list(row) for row in metrics.confusion.counts],
+        },
+        "answers": [
+            {
+                "answer_id": answer.answer_id,
+                "g": answer.g,
+                "p": answer.p,
+                "m": answer.m,
+                "c": answer.c,
+                "extraction_f1": answer.extraction_f1,
+                "joint_f1": answer.joint_f1,
+            }
+            for answer in metrics.answers
+        ],
+    }
+
+
+def _label_document(metrics: LabelMetrics) -> dict[str, float]:
+    return {"precision": metrics.precision, "recall": metrics.recall, "f1": metrics.f1}
