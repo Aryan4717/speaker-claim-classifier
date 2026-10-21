@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/reliability-controls` overlaps answers, caps in-flight model calls at three, and retries one transient provider failure. Langfuse traces, the Sentry adapter, and the single v2 change are still later branches.
+`feat/langfuse-traces` records one trace per answer. Development traces carry `extraction_f1` and `joint_f1`. Check traces do not. The Sentry adapter and the single v2 change are still later branches.
 
 ## What this does
 
@@ -145,7 +145,9 @@ Store `runs`, `answer_results`, and `claim_results`. Alembic revision `20261021_
 
 The OpenAI adapter maps timeout, rate limit, authentication, and 5xx or connection failures onto those domain errors before the generic provider failure. The pipeline turns an exhausted timeout into `timeout`, rejected credentials into `authentication_failed`, and the other provider errors into `provider_failure`.
 
-Langfuse: one trace per answer, generation observations for model calls, and tool observations for `get_brand_facts`. Development traces carry per-answer `extraction_f1` and `joint_f1`. Check traces do not carry quality scores.
+`EvaluationService` opens one trace per answer through `TracerPort`, including answers classified with `asyncio.to_thread`. The claim pipeline records a generation for each model turn and a tool observation for each `get_brand_facts` call. Trace metadata is `answer_id`, `brand_id`, `split`, `agent_version`, `model`, and `run_id`. After scoring, a development run attaches that answer's `extraction_f1` and `joint_f1`. A check run keeps the trace and does not attach scores. Gold labels are not a trace input.
+
+`build_tracer` returns `LangfuseTracer` when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are both set, and `NoOpTracer` when either is missing. `adapters/langfuse_tracer.py` is the only module that imports `langfuse`. A failure inside that adapter does not fail the answer. `POST /classify` traces the answer and does not attach scores, because that route does not load gold.
 
 Sentry is optional. When `SENTRY_DSN` is unset, the process runs without it. The SDK will be imported only by the monitor adapter on `feat/sentry-integration`.
 

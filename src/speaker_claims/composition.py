@@ -9,6 +9,24 @@ from speaker_claims.adapters.openai_provider import DEFAULT_MODEL, OpenAIProvide
 from speaker_claims.application.claim_pipeline import V1ClaimPipeline
 from speaker_claims.application.fact_tool import FactToolExecutor
 from speaker_claims.application.reliability import ProviderGate, RetryingProvider, RetryPolicy
+from speaker_claims.application.tracing import NoOpTracer
+from speaker_claims.config import Settings
+from speaker_claims.ports.tracer import TracerPort
+
+
+def build_tracer(settings: Settings) -> TracerPort:
+    """Select the Langfuse adapter only when both keys are present."""
+    secret = settings.langfuse_secret_key
+    public_key = settings.langfuse_public_key.strip()
+    if secret is None or public_key == "":
+        return NoOpTracer()
+    from speaker_claims.adapters.langfuse_tracer import LangfuseTracer
+
+    return LangfuseTracer(
+        public_key=public_key,
+        secret_key=secret.get_secret_value(),
+        host=settings.langfuse_host.strip(),
+    )
 
 
 def load_v1_prompt() -> str:
