@@ -2,10 +2,15 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APITimeoutError
+from openai import APITimeoutError, AuthenticationError, InternalServerError, RateLimitError
 
 from speaker_claims.adapters.openai_provider import OpenAIProvider
-from speaker_claims.domain.errors import ProviderTimeout
+from speaker_claims.domain.errors import (
+    ProviderAuthError,
+    ProviderRateLimit,
+    ProviderTimeout,
+    ProviderTransient,
+)
 from speaker_claims.ports.llm import ChatMessage
 
 
@@ -52,6 +57,36 @@ def test_provider_maps_a_tool_call_and_passes_the_timeout() -> None:
     assert client.completions.kwargs["model"] == "gpt-4o-mini"
     tools = client.completions.kwargs["tools"]
     assert tools[0]["function"]["name"] == "get_brand_facts"
+
+
+def test_provider_classifies_rate_limit_auth_and_server_errors() -> None:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    limited = RateLimitError("limited", response=httpx.Response(429, request=request), body=None)
+    with pytest.raises(ProviderRateLimit):
+        OpenAIProvider(api_key="sk-test", client=_client(limited)).complete(
+            (ChatMessage(role="user", content="hello"),),
+            timeout_seconds=15,
+        )
+    denied = AuthenticationError(
+        "denied",
+        response=httpx.Response(401, request=request),
+        body=None,
+    )
+    with pytest.raises(ProviderAuthError):
+        OpenAIProvider(api_key="sk-test", client=_client(denied)).complete(
+            (ChatMessage(role="user", content="hello"),),
+            timeout_seconds=15,
+        )
+    failed = InternalServerError(
+        "down",
+        response=httpx.Response(500, request=request),
+        body=None,
+    )
+    with pytest.raises(ProviderTransient):
+        OpenAIProvider(api_key="sk-test", client=_client(failed)).complete(
+            (ChatMessage(role="user", content="hello"),),
+            timeout_seconds=15,
+        )
 
 
 def test_provider_timeout_does_not_include_the_sdk_message() -> None:

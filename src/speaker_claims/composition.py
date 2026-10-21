@@ -8,6 +8,7 @@ from speaker_claims.adapters.csv_catalogue import CsvFactCatalogue
 from speaker_claims.adapters.openai_provider import DEFAULT_MODEL, OpenAIProvider
 from speaker_claims.application.claim_pipeline import V1ClaimPipeline
 from speaker_claims.application.fact_tool import FactToolExecutor
+from speaker_claims.application.reliability import ProviderGate, RetryingProvider, RetryPolicy
 
 
 def load_v1_prompt() -> str:
@@ -24,7 +25,11 @@ def build_v1_pipeline(
 ) -> V1ClaimPipeline:
     """Wire the v1 prompt, the OpenAI adapter, and the catalogue at the edge."""
     return V1ClaimPipeline(
-        provider=OpenAIProvider(api_key=api_key, model=model, client=client),
+        provider=RetryingProvider(
+            OpenAIProvider(api_key=api_key, model=model, client=client),
+            policy=RetryPolicy(),
+            gate=ProviderGate(),
+        ),
         executor=FactToolExecutor(catalogue),
         known_fact_ids=catalogue.fact_ids(),
         prompt=prompt if prompt is not None else load_v1_prompt(),

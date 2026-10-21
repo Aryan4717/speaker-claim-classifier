@@ -34,6 +34,21 @@ class ProviderTimeout(DomainError):
         super().__init__("timeout", "The model request timed out")
 
 
+class ProviderRateLimit(DomainError):
+    def __init__(self) -> None:
+        super().__init__("rate_limit", "The model provider rate limited the request")
+
+
+class ProviderTransient(DomainError):
+    def __init__(self) -> None:
+        super().__init__("transient_failure", "The model provider failed temporarily")
+
+
+class ProviderAuthError(DomainError):
+    def __init__(self) -> None:
+        super().__init__("authentication_failed", "The model provider rejected the credentials")
+
+
 class ProviderFailure(DomainError):
     def __init__(self) -> None:
         super().__init__("provider_failure", "The model request failed")
