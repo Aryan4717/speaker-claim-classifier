@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/evaluation-harness` scores exact spans. The API, Langfuse traces, Sentry adapter, and the single v2 change are still later branches. Sections below that name those pieces describe the contract, not code that is already here.
+`feat/fastapi-postgres` stores evaluation runs and serves the three HTTP endpoints. Langfuse traces, the Sentry adapter, and the single v2 change are still later branches.
 
 ## What this does
 
@@ -135,7 +135,7 @@ Arithmetic check: `G=10`, `P=10`, `M=8`, `C=7` gives extraction precision, recal
 | `POST /evaluation-runs` | Body is `agent_version` and `split` (`development` or `check`). `201` with `run_id` and available metrics. Check quality metrics stay null. |
 | `GET /evaluation-runs/{id}` | Joins run metadata, answer outcomes, and predicted claims. Missing run: `404`. Invalid UUID: `422`. |
 
-Store `runs`, `answer_results`, and `claim_results`. These tables are not migrated on this branch.
+Store `runs`, `answer_results`, and `claim_results`. Alembic revision `20261021_0001` creates them. `answer_results` is unique on `(run_id, answer_id)`. `claim_results` is unique on `(run_id, answer_id, start_char, end_char)` and references that answer row. Writes use bound parameters inside one transaction. `POST /classify` does not open the gold file. `POST /evaluation-runs` loads gold only for the development split, and a check run stores `quality` as null. `v2` is a valid request value and returns 422 until that pipeline is registered.
 
 ## Reliability and observability
 

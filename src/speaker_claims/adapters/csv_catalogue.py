@@ -65,6 +65,14 @@ def load_answers(path: Path) -> tuple[AnswerRecord, ...]:
     )
 
 
+class CsvAnswerSource:
+    def __init__(self, path: Path) -> None:
+        self._answers = load_answers(path)
+
+    def by_split(self, split: str) -> tuple[AnswerRecord, ...]:
+        return tuple(answer for answer in self._answers if answer.split == split)
+
+
 def _parse_fact(row: dict[str, str]) -> BrandFact:
     value_type = row["value_type"]
     if value_type not in _VALUE_TYPES:
