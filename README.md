@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/openai-agent-v1` adds the v1 tool-calling loop. The scorer, API, Langfuse traces, Sentry adapter, and the single v2 change are still later branches. Sections below that name those pieces describe the contract, not code that is already here.
+`feat/evaluation-harness` scores exact spans. The API, Langfuse traces, Sentry adapter, and the single v2 change are still later branches. Sections below that name those pieces describe the contract, not code that is already here.
 
 ## What this does
 
@@ -68,6 +68,16 @@ Boolean catalogue text is parsed only from `true` and `false`. Dates stay `YYYY-
 The model returns exact quotes, labels, fact ids, and a short reason. It is not asked for character offsets. `locate_quotes` finds each quote in `ai_answer` and builds `claim_id`, `start_char`, and `end_char`. A malformed body, a bad label, an unknown fact id, an illegal tool, an unknown brand, a timeout, or a third turn that is still a tool call becomes an answer error with no claims. That error is not stored as `unknown`. An empty claims list is a successful answer.
 
 `OpenAIProvider` is the only type that imports the OpenAI SDK. Tests use a fake `LlmPort`. The v1 prompt is `prompts/v1/system.txt`. It does not contain gold labels. Live calls use `gpt-4o-mini` with a 15-second request timeout. Retries are not part of this branch.
+
+## Evaluation harness
+
+`score_run` matches a prediction to a gold claim only when `answer_id`, `start_char`, and `end_char` are the same and the quotes are equal. Each gold span matches at most one prediction. Claims on an answer error are not accepted.
+
+Extraction uses `M` and `G`/`P`. Joint metrics use `C`, the matches whose label is also correct. Joint F1 is the comparison metric. Per-label precision, recall, and F1 are unweighted into macro F1 across `supported`, `contradicted`, and `unknown`. A zero denominator is 0 when the scheduled split has answers. Check runs and an empty schedule leave `quality` null.
+
+The confusion matrix rows are `supported`, `contradicted`, `unknown`, and `no_gold`. The columns are `supported`, `contradicted`, `unknown`, and `missing_or_error`. The `no_gold` / `missing_or_error` cell is 0. The matrix total is `G` plus unmatched predictions.
+
+`load_gold` reads `data/development_gold.csv` for the harness only. `ClaimPipeline` does not import it.
 
 ## Data
 
