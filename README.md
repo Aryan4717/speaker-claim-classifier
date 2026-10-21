@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/catalogue-and-validation` adds the CSV catalogue, `get_brand_facts`, and the span-validation chain. The agent, scorer, API, Langfuse traces, and Sentry adapter are still later branches. Sections below that name those pieces describe the contract, not code that is already here.
+`feat/openai-agent-v1` adds the v1 tool-calling loop. The scorer, API, Langfuse traces, Sentry adapter, and the single v2 change are still later branches. Sections below that name those pieces describe the contract, not code that is already here.
 
 ## What this does
 
@@ -59,7 +59,15 @@ flowchart LR
 | Interface segregation | `FactCataloguePort` exposes `get_brand_facts` only. Fact-id membership stays on the CSV adapter and is passed into the chain as a set. |
 | Dependency inversion | `FactToolExecutor` takes a `FactCataloguePort`. The CSV class is constructed by the caller. |
 
-Boolean catalogue text is parsed only from `true` and `false`. Dates stay `YYYY-MM-DD`. A blank unit or condition is stored as not applicable. `ai_answer` is kept exactly as decoded, so gold offsets match `ai_answer[start_char:end_char]`. Gold rows are read by tests on this branch. The tool path does not open `development_gold.csv`.
+Boolean catalogue text is parsed only from `true` and `false`. Dates stay `YYYY-MM-DD`. A blank unit or condition is stored as not applicable. `ai_answer` is kept exactly as decoded, so gold offsets match `ai_answer[start_char:end_char]`. Gold rows are read by tests. The tool path does not open `development_gold.csv`.
+
+## Classification agent
+
+`ClaimPipeline.classify` is the fixed loop: at most three model turns, every tool call in a turn executed before the next turn, then quote location and the span chain. `V1ClaimPipeline.opening_messages` is the one step a later version replaces. The loop does not change for v2.
+
+The model returns exact quotes, labels, fact ids, and a short reason. It is not asked for character offsets. `locate_quotes` finds each quote in `ai_answer` and builds `claim_id`, `start_char`, and `end_char`. A malformed body, a bad label, an unknown fact id, an illegal tool, an unknown brand, a timeout, or a third turn that is still a tool call becomes an answer error with no claims. That error is not stored as `unknown`. An empty claims list is a successful answer.
+
+`OpenAIProvider` is the only type that imports the OpenAI SDK. Tests use a fake `LlmPort`. The v1 prompt is `prompts/v1/system.txt`. It does not contain gold labels. Live calls use `gpt-4o-mini` with a 15-second request timeout. Retries are not part of this branch.
 
 ## Data
 
