@@ -27,3 +27,13 @@ class CatalogueFormatError(DomainError):
 class SpanValidationError(DomainError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(code, message)
+
+
+class ProviderTimeout(DomainError):
+    def __init__(self) -> None:
+        super().__init__("timeout", "The model request timed out")
+
+
+class ProviderFailure(DomainError):
+    def __init__(self) -> None:
+        super().__init__("provider_failure", "The model request failed")
