@@ -131,16 +131,24 @@ Arithmetic check: `G=10`, `P=10`, `M=8`, `C=7` gives extraction precision, recal
 
 `v1` is frozen at `prompts/v1/system.txt`. `V2ClaimPipeline` overrides `opening_messages` and reads `prompts/v2/system.txt`. The classify loop, tool executor, quote locator, span chain, and scorer are unchanged.
 
-The one added instruction tells the model not to transfer a fact across a different model, variant, feature, date, or condition. Silence about that target stays `unknown` unless a supplied fact explicitly refutes it. Development labels often turn on scope and feature conflation, so this is the change under test. It can also push a genuinely supported sentence to `unknown`, which would lower joint F1.
+The one added instruction tells the model not to transfer a fact across a different model, variant, feature, date, or condition. Silence about that target stays `unknown` unless a supplied fact explicitly refutes it.
 
-Both prompts are frozen before the check split. `python -m speaker_claims.reports` runs `v1` development, `v2` development, `v1` check, and `v2` check, in that order. It writes:
+Both prompts were frozen before the check split. The live runs are `gpt-4o-mini`, temperature 0, and the four files below. Check quality is null.
 
-- `reports/v1-development.json`
-- `reports/v2-development.json`
-- `reports/v1-check.json`
-- `reports/v2-check.json`
+| Run | Answers | Errors | Accepted | Extraction F1 | Joint F1 |
+| --- | --- | --- | --- | --- | --- |
+| `v1` development | 40 | 10 | 291 | 0.795 | 0.657 |
+| `v2` development | 40 | 12 | 259 | 0.778 | 0.636 |
+| `v1` check | 10 | 4 | 59 | null | null |
+| `v2` check | 10 | 5 | 48 | null | null |
 
-Check artifacts keep `quality` null. Development artifacts include joint F1, which is the comparison. The command needs `OPENAI_API_KEY` and a PostgreSQL `DATABASE_URL` in `.env`. It does not send gold to the model. Copy `.env.example` and fill in the key before running it.
+On development, `v1` scored G=376, P=291, M=265, C=219. `v2` scored G=376, P=259, M=247, C=202. Extraction precision rose from 0.911 to 0.954, and unmatched predictions fell from 26 to 12. Recall fell from 0.705 to 0.657, missed gold rose from 111 to 129, and joint F1 fell from 0.657 to 0.636. Macro F1 fell from 0.657 to 0.634. Wrong-label matches stayed nearly flat, 46 to 45.
+
+`v1` development errors were 5 `quote_not_found`, 4 `unknown_brand`, and 1 `invalid_output`. `v2` had the same 5 quote misses and 4 unknown brands, plus 3 invalid outputs. The unknown brands are rejected before the model, so the prompt did not cause them. Check errors were 2 `invalid_output` and 2 `quote_not_found` for `v1`, and 4 `quote_not_found` and 1 `invalid_output` for `v2`.
+
+The transfer rule made the model more conservative. It dropped sentences that were real gold claims, so `v1` remains the stronger development baseline.
+
+`python -m speaker_claims.reports` rewrites `reports/v1-development.json`, `reports/v2-development.json`, `reports/v1-check.json`, and `reports/v2-check.json`. It needs `OPENAI_API_KEY` and a PostgreSQL `DATABASE_URL` in `.env`. It does not send gold to the model.
 
 ## API and database
 
