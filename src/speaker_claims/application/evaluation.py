@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from speaker_claims.application.scoring import quality_document, score_run
+from speaker_claims.application.scoring import ScoreReport, quality_document, score_run
+from speaker_claims.application.tracing import NoOpTracer, open_answer
 from speaker_claims.domain.claims import AnswerRecord, PredictedClaim
 from speaker_claims.domain.errors import UnavailableAgentVersion, UnknownBrandError
 from speaker_claims.domain.gold import GoldClaim
@@ -15,6 +16,7 @@ from speaker_claims.domain.runs import StoredAnswer, StoredClaim, StoredRun
 from speaker_claims.ports.catalogue import FactCataloguePort
 from speaker_claims.ports.classifier import ClassifierPort
 from speaker_claims.ports.run_store import RunStorePort
+from speaker_claims.ports.tracer import TracerPort
 
 DATASET_VERSION = "long-brand-answers-50-v4"
 EVALUATOR_VERSION = "sentence-spans-and-labels-v4"
@@ -47,6 +49,7 @@ class EvaluationService:
         settings: dict[str, object],
         source_revision: str | None,
         file_hashes: dict[str, str],
+        tracer: TracerPort | None = None,
     ) -> None:
         self._classifiers = classifiers
         self._catalogue = catalogue
@@ -58,25 +61,54 @@ class EvaluationService:
         self._settings = settings
         self._source_revision = source_revision
         self._file_hashes = file_hashes
+        self._tracer = tracer if tracer is not None else NoOpTracer()
 
     def classify(self, answer: AnswerRecord, agent_version: str) -> AnswerOutcome:
         classifier = self._require(agent_version)
-        self._catalogue.get_brand_facts(answer.brand_id)
-        return classifier.classify(answer)
+        with self._open(answer, agent_version, None) as trace_id:
+            try:
+                self._catalogue.get_brand_facts(answer.brand_id)
+            except UnknownBrandError:
+                self._tracer.finish_answer(trace_id, status="error", error_code="unknown_brand")
+                self._tracer.flush()
+                raise
+            try:
+                outcome = classifier.classify(answer)
+            except Exception:
+                self._tracer.finish_answer(
+                    trace_id,
+                    status="error",
+                    error_code="provider_failure",
+                )
+                self._tracer.flush()
+                raise
+            tagged = _tagged(outcome, trace_id)
+            self._tracer.finish_answer(
+                trace_id,
+                status=tagged.status,
+                error_code=tagged.error_code,
+            )
+            self._tracer.flush()
+            return tagged
 
     def start_run(self, agent_version: str, split: str) -> StoredRun:
         classifier = self._require(agent_version)
+        run_id = uuid4()
         scheduled = tuple(sorted(self._answers.by_split(split), key=lambda item: item.answer_id))
-        results = asyncio.run(self._classify_all(scheduled, classifier, agent_version))
+        results = asyncio.run(
+            self._classify_all(scheduled, classifier, agent_version, str(run_id))
+        )
         outcomes = tuple(outcome for outcome, _latency in results)
         stored_answers = tuple(
             _stored_answer(outcome, latency_ms) for outcome, latency_ms in results
         )
         gold = self._gold.load() if split == "development" else ()
         report = score_run(split, tuple(outcomes), gold)
+        self._attach_scores(split, report, outcomes)
+        self._tracer.flush()
         quality = None if report.quality is None else quality_document(report.quality)
         run = StoredRun(
-            run_id=uuid4(),
+            run_id=run_id,
             split=split,
             agent_version=agent_version,
             prompt_version=agent_version,
@@ -107,9 +139,16 @@ class EvaluationService:
         answers: tuple[AnswerRecord, ...],
         classifier: ClassifierPort,
         agent_version: str,
+        run_id: str,
     ) -> list[tuple[AnswerOutcome, int]]:
         tasks = [
-            asyncio.to_thread(self._classify_scheduled, answer, classifier, agent_version)
+            asyncio.to_thread(
+                self._classify_scheduled,
+                answer,
+                classifier,
+                agent_version,
+                run_id,
+            )
             for answer in answers
         ]
         return list(await asyncio.gather(*tasks))
@@ -125,42 +164,81 @@ class EvaluationService:
         answer: AnswerRecord,
         classifier: ClassifierPort,
         agent_version: str,
+        run_id: str,
     ) -> tuple[AnswerOutcome, int]:
-        try:
-            self._catalogue.get_brand_facts(answer.brand_id)
-        except UnknownBrandError:
-            outcome = AnswerOutcome(
-                answer_id=answer.answer_id,
-                agent_version=agent_version,
-                status="error",
-                claims=(),
-                error_code="unknown_brand",
-                error_message=f"Unknown brand: {answer.brand_id}",
+        with self._open(answer, agent_version, run_id) as trace_id:
+            try:
+                self._catalogue.get_brand_facts(answer.brand_id)
+            except UnknownBrandError:
+                self._tracer.finish_answer(trace_id, status="error", error_code="unknown_brand")
+                outcome = AnswerOutcome(
+                    answer_id=answer.answer_id,
+                    agent_version=agent_version,
+                    status="error",
+                    claims=(),
+                    error_code="unknown_brand",
+                    error_message=f"Unknown brand: {answer.brand_id}",
+                    trace_id=trace_id,
+                )
+                return outcome, 0
+            started = time.perf_counter()
+            try:
+                outcome = classifier.classify(answer)
+            except Exception:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self._tracer.finish_answer(
+                    trace_id,
+                    status="error",
+                    error_code="provider_failure",
+                )
+                outcome = AnswerOutcome(
+                    answer_id=answer.answer_id,
+                    agent_version=agent_version,
+                    status="error",
+                    claims=(),
+                    error_code="provider_failure",
+                    error_message="The answer failed",
+                    trace_id=trace_id,
+                )
+                return outcome, elapsed_ms
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            tagged = _tagged(outcome, trace_id)
+            self._tracer.finish_answer(
+                trace_id,
+                status=tagged.status,
+                error_code=tagged.error_code,
             )
-            return outcome, 0
-        started = time.perf_counter()
-        try:
-            outcome = classifier.classify(answer)
-        except Exception:
-            outcome = AnswerOutcome(
-                answer_id=answer.answer_id,
-                agent_version=agent_version,
-                status="error",
-                claims=(),
-                error_code="provider_failure",
-                error_message="The answer failed",
+            return tagged, elapsed_ms
+
+    def _open(self, answer: AnswerRecord, agent_version: str, run_id: str | None):
+        return open_answer(
+            self._tracer,
+            answer_id=answer.answer_id,
+            brand_id=answer.brand_id,
+            split=answer.split or "request",
+            agent_version=agent_version,
+            model=self._model,
+            run_id=run_id,
+        )
+
+    def _attach_scores(
+        self,
+        split: str,
+        report: ScoreReport,
+        outcomes: tuple[AnswerOutcome, ...],
+    ) -> None:
+        if split != "development" or report.quality is None:
+            return
+        by_answer = {item.answer_id: item for item in report.quality.answers}
+        for outcome in outcomes:
+            quality = by_answer.get(outcome.answer_id)
+            if quality is None:
+                continue
+            self._tracer.score_answer(
+                outcome.trace_id,
+                extraction_f1=quality.extraction_f1,
+                joint_f1=quality.joint_f1,
             )
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        if outcome.status == "error":
-            outcome = AnswerOutcome(
-                answer_id=outcome.answer_id,
-                agent_version=outcome.agent_version,
-                status="error",
-                claims=(),
-                error_code=outcome.error_code,
-                error_message=outcome.error_message,
-            )
-        return outcome, elapsed_ms
 
 
 def _stored_answer(outcome: AnswerOutcome, latency_ms: int) -> StoredAnswer:
@@ -174,8 +252,20 @@ def _stored_answer(outcome: AnswerOutcome, latency_ms: int) -> StoredAnswer:
         error_code=outcome.error_code,
         error_message=outcome.error_message,
         latency_ms=latency_ms,
-        trace_id=None,
+        trace_id=outcome.trace_id,
         claims=claims,
+    )
+
+
+def _tagged(outcome: AnswerOutcome, trace_id: str | None) -> AnswerOutcome:
+    return AnswerOutcome(
+        answer_id=outcome.answer_id,
+        agent_version=outcome.agent_version,
+        status=outcome.status,
+        claims=outcome.claims if outcome.status == "ok" else (),
+        error_code=outcome.error_code,
+        error_message=outcome.error_message,
+        trace_id=trace_id,
     )
 
 

@@ -227,4 +227,4 @@ def test_pipeline_module_does_not_import_openai() -> None:
             imported.extend(alias.name for alias in node.names)
         if isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
-    assert all(not name.startswith(("openai", "sentry_sdk")) for name in imported)
+    assert all(not name.startswith(("openai", "sentry_sdk", "langfuse")) for name in imported)

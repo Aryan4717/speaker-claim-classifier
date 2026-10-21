@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from speaker_claims.application.fact_tool import FactToolExecutor
 from speaker_claims.application.quote_locator import locate_quotes
 from speaker_claims.application.span_validation import AnswerClaims, build_span_chain
+from speaker_claims.application.tracing import current_trace
 from speaker_claims.domain.claims import AnswerRecord
 from speaker_claims.domain.errors import (
     DomainError,
@@ -16,7 +17,7 @@ from speaker_claims.domain.errors import (
     ProviderTransient,
 )
 from speaker_claims.domain.outcome import AnswerOutcome
-from speaker_claims.ports.llm import ChatMessage, LlmPort, ToolCall
+from speaker_claims.ports.llm import ChatMessage, LlmPort, ModelTurn, ToolCall
 
 MAX_MODEL_TURNS = 3
 REQUEST_TIMEOUT_SECONDS = 15.0
@@ -60,6 +61,7 @@ class ClaimPipeline(ABC):
                 )
             except (ProviderRateLimit, ProviderTransient, ProviderFailure):
                 return self._error(answer, "provider_failure", "The model request failed")
+            _record_generation(messages, result)
             if result.tool_calls:
                 if turn == MAX_MODEL_TURNS - 1:
                     return self._error(
@@ -90,6 +92,7 @@ class ClaimPipeline(ABC):
         for call in tool_calls:
             arguments = _parse_arguments(call.arguments_json)
             if arguments is None:
+                _record_tool(call.name, None, None, "invalid_output")
                 return self._error(
                     answer,
                     "invalid_output",
@@ -98,7 +101,9 @@ class ClaimPipeline(ABC):
             try:
                 payload = self._executor.execute(call.name, arguments)
             except DomainError as exc:
+                _record_tool(call.name, arguments, None, exc.code)
                 return self._error(answer, exc.code, str(exc))
+            _record_tool(call.name, arguments, payload, None)
             messages.append(
                 ChatMessage(
                     role="tool",
@@ -215,6 +220,57 @@ def _parse_claims(content: str, answer_id: str) -> list[tuple[str, str, tuple[st
             raise TypeError("fact_ids must be a list of strings")
         parsed.append((quote, label, tuple(fact_ids), reason))
     return parsed
+
+
+def _record_generation(messages: list[ChatMessage], result: ModelTurn) -> None:
+    active = current_trace()
+    if active is None:
+        return
+    if result.tool_calls:
+        output = json.dumps(
+            [
+                {"name": call.name, "arguments": call.arguments_json}
+                for call in result.tool_calls
+            ],
+            ensure_ascii=False,
+        )
+    else:
+        output = result.content
+    active.tracer.record_generation(
+        active.trace_id,
+        model=active.model,
+        messages=tuple(_message_view(message) for message in messages),
+        output=output,
+    )
+
+
+def _record_tool(
+    name: str,
+    arguments: dict[str, object] | None,
+    output: dict[str, object] | None,
+    error_code: str | None,
+) -> None:
+    active = current_trace()
+    if active is None:
+        return
+    active.tracer.record_tool(
+        active.trace_id,
+        name=name,
+        arguments=arguments,
+        output=output,
+        error_code=error_code,
+    )
+
+
+def _message_view(message: ChatMessage) -> dict[str, object]:
+    view: dict[str, object] = {"role": message.role, "content": message.content}
+    if message.tool_calls:
+        view["tool_calls"] = [
+            {"name": call.name, "arguments": call.arguments_json} for call in message.tool_calls
+        ]
+    if message.tool_call_id:
+        view["tool_call_id"] = message.tool_call_id
+    return view
 
 
 def _json_text(content: str) -> str:
