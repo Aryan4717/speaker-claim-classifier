@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Protocol
@@ -66,12 +67,11 @@ class EvaluationService:
     def start_run(self, agent_version: str, split: str) -> StoredRun:
         classifier = self._require(agent_version)
         scheduled = tuple(sorted(self._answers.by_split(split), key=lambda item: item.answer_id))
-        outcomes: list[AnswerOutcome] = []
-        stored_answers: list[StoredAnswer] = []
-        for answer in scheduled:
-            outcome, latency_ms = self._classify_scheduled(answer, classifier, agent_version)
-            outcomes.append(outcome)
-            stored_answers.append(_stored_answer(outcome, latency_ms))
+        results = asyncio.run(self._classify_all(scheduled, classifier, agent_version))
+        outcomes = tuple(outcome for outcome, _latency in results)
+        stored_answers = tuple(
+            _stored_answer(outcome, latency_ms) for outcome, latency_ms in results
+        )
         gold = self._gold.load() if split == "development" else ()
         report = score_run(split, tuple(outcomes), gold)
         quality = None if report.quality is None else quality_document(report.quality)
@@ -94,13 +94,25 @@ class EvaluationService:
             answer_error_count=report.answer_error_count,
             accepted_prediction_count=report.accepted_prediction_count,
             quality=quality,
-            answers=tuple(stored_answers),
+            answers=stored_answers,
         )
         self._store.save(run)
         return run
 
     def get_run(self, run_id: UUID) -> StoredRun | None:
         return self._store.get(run_id)
+
+    async def _classify_all(
+        self,
+        answers: tuple[AnswerRecord, ...],
+        classifier: ClassifierPort,
+        agent_version: str,
+    ) -> list[tuple[AnswerOutcome, int]]:
+        tasks = [
+            asyncio.to_thread(self._classify_scheduled, answer, classifier, agent_version)
+            for answer in answers
+        ]
+        return list(await asyncio.gather(*tasks))
 
     def _require(self, agent_version: str) -> ClassifierPort:
         try:
@@ -127,7 +139,17 @@ class EvaluationService:
             )
             return outcome, 0
         started = time.perf_counter()
-        outcome = classifier.classify(answer)
+        try:
+            outcome = classifier.classify(answer)
+        except Exception:
+            outcome = AnswerOutcome(
+                answer_id=answer.answer_id,
+                agent_version=agent_version,
+                status="error",
+                claims=(),
+                error_code="provider_failure",
+                error_message="The answer failed",
+            )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         if outcome.status == "error":
             outcome = AnswerOutcome(

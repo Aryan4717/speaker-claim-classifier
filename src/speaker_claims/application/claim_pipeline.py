@@ -7,7 +7,14 @@ from speaker_claims.application.fact_tool import FactToolExecutor
 from speaker_claims.application.quote_locator import locate_quotes
 from speaker_claims.application.span_validation import AnswerClaims, build_span_chain
 from speaker_claims.domain.claims import AnswerRecord
-from speaker_claims.domain.errors import DomainError, ProviderFailure, ProviderTimeout
+from speaker_claims.domain.errors import (
+    DomainError,
+    ProviderAuthError,
+    ProviderFailure,
+    ProviderRateLimit,
+    ProviderTimeout,
+    ProviderTransient,
+)
 from speaker_claims.domain.outcome import AnswerOutcome
 from speaker_claims.ports.llm import ChatMessage, LlmPort, ToolCall
 
@@ -45,7 +52,13 @@ class ClaimPipeline(ABC):
                 result = self._provider.complete(tuple(messages), REQUEST_TIMEOUT_SECONDS)
             except ProviderTimeout:
                 return self._error(answer, "timeout", "The model request timed out")
-            except ProviderFailure:
+            except ProviderAuthError:
+                return self._error(
+                    answer,
+                    "authentication_failed",
+                    "The model provider rejected the credentials",
+                )
+            except (ProviderRateLimit, ProviderTransient, ProviderFailure):
                 return self._error(answer, "provider_failure", "The model request failed")
             if result.tool_calls:
                 if turn == MAX_MODEL_TURNS - 1:

@@ -1,8 +1,24 @@
 from __future__ import annotations
 
-from openai import APIError, APITimeoutError, OpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    InternalServerError,
+    OpenAI,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
-from speaker_claims.domain.errors import ProviderFailure, ProviderTimeout
+from speaker_claims.domain.errors import (
+    ProviderAuthError,
+    ProviderFailure,
+    ProviderRateLimit,
+    ProviderTimeout,
+    ProviderTransient,
+)
 from speaker_claims.ports.llm import ChatMessage, ModelTurn, ToolCall
 
 DEFAULT_MODEL = "gpt-4o-mini"
@@ -56,6 +72,18 @@ class OpenAIProvider:
             )
         except APITimeoutError as exc:
             raise ProviderTimeout() from exc
+        except RateLimitError as exc:
+            raise ProviderRateLimit() from exc
+        except (AuthenticationError, PermissionDeniedError) as exc:
+            raise ProviderAuthError() from exc
+        except InternalServerError as exc:
+            raise ProviderTransient() from exc
+        except APIConnectionError as exc:
+            raise ProviderTransient() from exc
+        except APIStatusError as exc:
+            if exc.status_code in {500, 502, 503}:
+                raise ProviderTransient() from exc
+            raise ProviderFailure() from exc
         except APIError as exc:
             raise ProviderFailure() from exc
         choice = completion.choices[0].message

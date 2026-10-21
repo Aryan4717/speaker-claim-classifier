@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/fastapi-postgres` stores evaluation runs and serves the three HTTP endpoints. Langfuse traces, the Sentry adapter, and the single v2 change are still later branches.
+`feat/reliability-controls` overlaps answers, caps in-flight model calls at three, and retries one transient provider failure. Langfuse traces, the Sentry adapter, and the single v2 change are still later branches.
 
 ## What this does
 
@@ -139,7 +139,11 @@ Store `runs`, `answer_results`, and `claim_results`. Alembic revision `20261021_
 
 ## Reliability and observability
 
-Overlap independent answers. At most three active provider requests, including retries. 15-second timeout per provider request. At most one retry for timeout, rate limit, or an explicitly transient failure. Do not retry malformed output or permanent authentication errors.
+`EvaluationService.start_run` classifies the scheduled answers together with `asyncio.to_thread`. One answer exception becomes an error outcome and the other answers are still stored, ordered by `answer_id`.
+
+`RetryingProvider` wraps `LlmPort`. It allows two attempts and retries only `ProviderTimeout`, `ProviderRateLimit`, and `ProviderTransient`, after a 0.2 second delay. The slot is released before that delay. Authentication errors and malformed model JSON are not retried. `ProviderGate` is a semaphore of three, counted around the inner `complete` call. `composition.build_v1_pipeline` is the only place that wraps the OpenAI adapter. The claim pipeline still sees one `complete` call per turn.
+
+The OpenAI adapter maps timeout, rate limit, authentication, and 5xx or connection failures onto those domain errors before the generic provider failure. The pipeline turns an exhausted timeout into `timeout`, rejected credentials into `authentication_failed`, and the other provider errors into `provider_failure`.
 
 Langfuse: one trace per answer, generation observations for model calls, and tool observations for `get_brand_facts`. Development traces carry per-answer `extraction_f1` and `joint_f1`. Check traces do not carry quality scores.
 
