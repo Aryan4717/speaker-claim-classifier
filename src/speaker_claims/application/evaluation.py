@@ -6,6 +6,13 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from speaker_claims.application.monitoring import (
+    NoOpMonitor,
+    ReportedFailure,
+    already_reported,
+    capture_failure,
+    monitor_scope,
+)
 from speaker_claims.application.scoring import ScoreReport, quality_document, score_run
 from speaker_claims.application.tracing import NoOpTracer, open_answer
 from speaker_claims.domain.claims import AnswerRecord, PredictedClaim
@@ -15,6 +22,7 @@ from speaker_claims.domain.outcome import AnswerOutcome
 from speaker_claims.domain.runs import StoredAnswer, StoredClaim, StoredRun
 from speaker_claims.ports.catalogue import FactCataloguePort
 from speaker_claims.ports.classifier import ClassifierPort
+from speaker_claims.ports.monitor import ErrorMonitorPort
 from speaker_claims.ports.run_store import RunStorePort
 from speaker_claims.ports.tracer import TracerPort
 
@@ -50,6 +58,7 @@ class EvaluationService:
         source_revision: str | None,
         file_hashes: dict[str, str],
         tracer: TracerPort | None = None,
+        monitor: ErrorMonitorPort | None = None,
     ) -> None:
         self._classifiers = classifiers
         self._catalogue = catalogue
@@ -62,34 +71,45 @@ class EvaluationService:
         self._source_revision = source_revision
         self._file_hashes = file_hashes
         self._tracer = tracer if tracer is not None else NoOpTracer()
+        self._monitor = monitor if monitor is not None else NoOpMonitor()
+
+    @property
+    def monitor(self) -> ErrorMonitorPort:
+        return self._monitor
 
     def classify(self, answer: AnswerRecord, agent_version: str) -> AnswerOutcome:
         classifier = self._require(agent_version)
-        with self._open(answer, agent_version, None) as trace_id:
-            try:
-                self._catalogue.get_brand_facts(answer.brand_id)
-            except UnknownBrandError:
-                self._tracer.finish_answer(trace_id, status="error", error_code="unknown_brand")
-                self._tracer.flush()
-                raise
-            try:
-                outcome = classifier.classify(answer)
-            except Exception:
+        with self._watch(answer, agent_version, None):
+            with self._open(answer, agent_version, None) as trace_id:
+                try:
+                    self._catalogue.get_brand_facts(answer.brand_id)
+                except UnknownBrandError:
+                    self._tracer.finish_answer(
+                        trace_id,
+                        status="error",
+                        error_code="unknown_brand",
+                    )
+                    self._tracer.flush()
+                    raise
+                try:
+                    outcome = classifier.classify(answer)
+                except Exception:
+                    self._tracer.finish_answer(
+                        trace_id,
+                        status="error",
+                        error_code="provider_failure",
+                    )
+                    self._tracer.flush()
+                    raise
+                tagged = _tagged(outcome, trace_id)
+                self._report(tagged, answer, None)
                 self._tracer.finish_answer(
                     trace_id,
-                    status="error",
-                    error_code="provider_failure",
+                    status=tagged.status,
+                    error_code=tagged.error_code,
                 )
                 self._tracer.flush()
-                raise
-            tagged = _tagged(outcome, trace_id)
-            self._tracer.finish_answer(
-                trace_id,
-                status=tagged.status,
-                error_code=tagged.error_code,
-            )
-            self._tracer.flush()
-            return tagged
+                return tagged
 
     def start_run(self, agent_version: str, split: str) -> StoredRun:
         classifier = self._require(agent_version)
@@ -166,6 +186,16 @@ class EvaluationService:
         agent_version: str,
         run_id: str,
     ) -> tuple[AnswerOutcome, int]:
+        with self._watch(answer, agent_version, run_id):
+            return self._classify_watched(answer, classifier, agent_version, run_id)
+
+    def _classify_watched(
+        self,
+        answer: AnswerRecord,
+        classifier: ClassifierPort,
+        agent_version: str,
+        run_id: str,
+    ) -> tuple[AnswerOutcome, int]:
         with self._open(answer, agent_version, run_id) as trace_id:
             try:
                 self._catalogue.get_brand_facts(answer.brand_id)
@@ -180,12 +210,14 @@ class EvaluationService:
                     error_message=f"Unknown brand: {answer.brand_id}",
                     trace_id=trace_id,
                 )
+                self._report(outcome, answer, run_id)
                 return outcome, 0
             started = time.perf_counter()
             try:
                 outcome = classifier.classify(answer)
-            except Exception:
+            except Exception as exc:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                capture_failure(exc)
                 self._tracer.finish_answer(
                     trace_id,
                     status="error",
@@ -200,9 +232,11 @@ class EvaluationService:
                     error_message="The answer failed",
                     trace_id=trace_id,
                 )
+                self._report(outcome, answer, run_id)
                 return outcome, elapsed_ms
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             tagged = _tagged(outcome, trace_id)
+            self._report(tagged, answer, run_id)
             self._tracer.finish_answer(
                 trace_id,
                 status=tagged.status,
@@ -220,6 +254,28 @@ class EvaluationService:
             model=self._model,
             run_id=run_id,
         )
+
+    def _watch(self, answer: AnswerRecord, agent_version: str, run_id: str | None):
+        return monitor_scope(
+            self._monitor,
+            run_id=run_id,
+            answer_id=answer.answer_id,
+            split=answer.split or "request",
+            agent_version=agent_version,
+        )
+
+    def _report(self, outcome: AnswerOutcome, answer: AnswerRecord, run_id: str | None) -> None:
+        if outcome.status != "error" or already_reported():
+            return
+        if outcome.error_code == "unknown_brand" and run_id is not None:
+            self._monitor.breadcrumb(
+                category="answer",
+                message="unknown_brand",
+                data={"answer_id": answer.answer_id, "brand_id": answer.brand_id},
+            )
+            return
+        if outcome.error_code in {"timeout", "provider_failure", "authentication_failed"}:
+            self._monitor.capture_exception(ReportedFailure(outcome.error_code))
 
     def _attach_scores(
         self,

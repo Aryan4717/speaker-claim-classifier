@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from speaker_claims.application.evaluation import EvaluationService
@@ -10,6 +13,7 @@ from speaker_claims.domain.claims import AnswerRecord
 from speaker_claims.domain.errors import UnavailableAgentVersion, UnknownBrandError
 from speaker_claims.domain.outcome import AnswerOutcome
 from speaker_claims.domain.runs import StoredClaim, StoredRun
+from speaker_claims.ports.monitor import ErrorMonitorPort
 
 
 class ClassifyRequest(BaseModel):
@@ -29,8 +33,34 @@ class EvaluationRequest(BaseModel):
     split: str = Field(pattern="^(development|check)$")
 
 
-def create_app(service: EvaluationService) -> FastAPI:
+def create_app(service: EvaluationService, monitor: ErrorMonitorPort | None = None) -> FastAPI:
     app = FastAPI(title="Speaker claim classifier")
+    reporter = service.monitor if monitor is None else monitor
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        reporter.breadcrumb(
+            category="http",
+            message="validation",
+            data={"status_code": 422, "path": request.url.path},
+        )
+        return await request_validation_exception_handler(request, exc)
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        if exc.status_code in {404, 422}:
+            reporter.breadcrumb(
+                category="http",
+                message="client_error",
+                data={"status_code": exc.status_code, "path": request.url.path},
+            )
+        return await http_exception_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def unhandled(request: Request, exc: Exception) -> JSONResponse:
+        del request
+        reporter.capture_exception(exc)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
     @app.post("/classify")
     def classify(body: ClassifyRequest) -> dict[str, object]:

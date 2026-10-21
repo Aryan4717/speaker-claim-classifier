@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-`feat/langfuse-traces` records one trace per answer. Development traces carry `extraction_f1` and `joint_f1`. Check traces do not. The Sentry adapter and the single v2 change are still later branches.
+`feat/sentry-integration` reports provider failures, exhausted timeouts, and unhandled exceptions through an optional Sentry adapter. Expected 422 and 404 responses are breadcrumbs. The single v2 change is still a later branch.
 
 ## What this does
 
@@ -18,7 +18,7 @@ The agent discovers claims itself. No claim list is given to the model.
 - Keep a frozen baseline (`v1`) and one changed candidate (`v2`).
 - Expose a thin FastAPI service and store runs in PostgreSQL.
 - Record Langfuse traces, macro F1, bounded async execution, and selective retries.
-- Report unexpected failures through an optional Sentry adapter. Claim logic will depend on a port, not on `sentry_sdk`.
+- Report unexpected failures through an optional Sentry adapter. Claim logic depends on `ErrorMonitorPort`, not on `sentry_sdk`.
 
 ## Services
 
@@ -149,7 +149,9 @@ The OpenAI adapter maps timeout, rate limit, authentication, and 5xx or connecti
 
 `build_tracer` returns `LangfuseTracer` when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are both set, and `NoOpTracer` when either is missing. `adapters/langfuse_tracer.py` is the only module that imports `langfuse`. A failure inside that adapter does not fail the answer. `POST /classify` traces the answer and does not attach scores, because that route does not load gold.
 
-Sentry is optional. When `SENTRY_DSN` is unset, the process runs without it. The SDK will be imported only by the monitor adapter on `feat/sentry-integration`.
+Sentry is optional. `build_monitor` returns `SentryMonitor` when `SENTRY_DSN` is set and `NoOpMonitor` when it is empty. `adapters/sentry_monitor.py` is the only module that imports `sentry_sdk`. The claim pipeline and the scorer do not import it.
+
+`EvaluationService` opens a monitor scope for each answer with `run_id`, `answer_id`, `split`, and `agent_version`. The pipeline captures a timeout, authentication failure, or other provider exception inside that scope. A classifier that returns the same outcome without raising is captured once by the service. Unknown brands on an evaluation run are breadcrumbs. `POST /classify` maps an unknown brand to 404 and a validation failure to 422; those responses are breadcrumbs and are not captured. Unhandled exceptions are captured and returned as 500. Answer text and gold labels are not attached. `before_send` removes `Authorization`, cookies, request bodies, and the OpenAI, database, Langfuse, and Sentry secrets.
 
 ## Branching strategy
 

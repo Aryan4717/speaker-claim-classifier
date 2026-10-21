@@ -4,6 +4,7 @@ import json
 from abc import ABC, abstractmethod
 
 from speaker_claims.application.fact_tool import FactToolExecutor
+from speaker_claims.application.monitoring import capture_failure
 from speaker_claims.application.quote_locator import locate_quotes
 from speaker_claims.application.span_validation import AnswerClaims, build_span_chain
 from speaker_claims.application.tracing import current_trace
@@ -51,15 +52,18 @@ class ClaimPipeline(ABC):
         for turn in range(MAX_MODEL_TURNS):
             try:
                 result = self._provider.complete(tuple(messages), REQUEST_TIMEOUT_SECONDS)
-            except ProviderTimeout:
+            except ProviderTimeout as exc:
+                capture_failure(exc)
                 return self._error(answer, "timeout", "The model request timed out")
-            except ProviderAuthError:
+            except ProviderAuthError as exc:
+                capture_failure(exc)
                 return self._error(
                     answer,
                     "authentication_failed",
                     "The model provider rejected the credentials",
                 )
-            except (ProviderRateLimit, ProviderTransient, ProviderFailure):
+            except (ProviderRateLimit, ProviderTransient, ProviderFailure) as exc:
+                capture_failure(exc)
                 return self._error(answer, "provider_failure", "The model request failed")
             _record_generation(messages, result)
             if result.tool_calls:
