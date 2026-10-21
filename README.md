@@ -4,7 +4,7 @@ Kasparro FSE I assessment (version 4.0). A Python agent reads long answers about
 
 Time box: 2 to 3 hours. No hosted deployment. API keys, Langfuse credentials, and `SENTRY_DSN` stay out of the repository.
 
-This branch is `feat/project-setup-and-tooling`. It adds the package layout, fail-fast settings, local Postgres, and the issued CSVs. The agent, scorer, API, Langfuse traces, and Sentry adapter are later branches. Sections below describe the contract those branches must meet. They do not describe code that is already here.
+`feat/catalogue-and-validation` adds the CSV catalogue, `get_brand_facts`, and the span-validation chain. The agent, scorer, API, Langfuse traces, and Sentry adapter are still later branches. Sections below that name those pieces describe the contract, not code that is already here.
 
 ## What this does
 
@@ -27,6 +27,39 @@ The agent discovers claims itself. No claim list is given to the model.
 **The API** will own classification and evaluation. It is not started on this branch. When it exists, routes will call application services, and those services will depend on ports for the model, the catalogue, run storage, Langfuse, and Sentry.
 
 **Settings** load in `src/speaker_claims/config.py`. A missing `OPENAI_API_KEY`, a missing `DATABASE_URL`, a non-PostgreSQL URL, or a malformed `SENTRY_DSN` stops startup. An empty `SENTRY_DSN` is valid.
+
+**The catalogue** is `data/brand_facts.csv`, loaded by `CsvFactCatalogue`. `FactToolExecutor` is the only caller that may request facts, and it accepts only `get_brand_facts`. The executor depends on `FactCataloguePort`. It does not read the CSV itself.
+
+## Catalogue and span validation
+
+```mermaid
+flowchart LR
+  executor[FactToolExecutor]
+  port[FactCataloguePort]
+  csv[CsvFactCatalogue]
+  chain[SpanCheck chain]
+  executor --> port
+  port --> csv
+  chain --> bounds[BoundsCheck]
+  bounds --> quote[QuoteCheck]
+  quote --> claimId[ClaimIdCheck]
+  claimId --> label[LabelCheck]
+  label --> factIds[FactIdCheck]
+  factIds --> duplicate[DuplicateCheck]
+  duplicate --> overlap[OverlapCheck]
+  overlap --> orderCheck[OrderCheck]
+  orderCheck --> reason[ReasonCheck]
+```
+
+| Principle | Where it appears |
+| --- | --- |
+| Single responsibility | Each `SpanCheck` enforces one rule. `CsvFactCatalogue` only loads and serves facts. `FactToolExecutor` only accepts or rejects a tool call. |
+| Open/closed | A new span rule is a new `SpanCheck` added in `build_span_chain`. Existing checks stay unchanged. |
+| Liskov substitution | Tests can pass any object with `get_brand_facts` where a `FactCataloguePort` is required. |
+| Interface segregation | `FactCataloguePort` exposes `get_brand_facts` only. Fact-id membership stays on the CSV adapter and is passed into the chain as a set. |
+| Dependency inversion | `FactToolExecutor` takes a `FactCataloguePort`. The CSV class is constructed by the caller. |
+
+Boolean catalogue text is parsed only from `true` and `false`. Dates stay `YYYY-MM-DD`. A blank unit or condition is stored as not applicable. `ai_answer` is kept exactly as decoded, so gold offsets match `ai_answer[start_char:end_char]`. Gold rows are read by tests on this branch. The tool path does not open `development_gold.csv`.
 
 ## Data
 
@@ -112,7 +145,7 @@ master
        └─ feat/agent-v2-and-reports
 ```
 
-Architecture, SOLID, design patterns, the schema, and data-flow diagrams are written into this file on the branch that adds the code they describe.
+The catalogue port, the tool executor, and the span chain are in this branch. Schema, request data flow, Langfuse, and Sentry are written into this file on the branches that add them.
 
 ## Tech stack
 
